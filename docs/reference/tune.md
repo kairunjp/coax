@@ -70,6 +70,24 @@ Linuxでは、PCIeのチューナーだけでなく、Linux DVBのドライバ�
 ./coax tune --system ISDBT --ch 27 | ts-filter > ter27.ts
 ```
 
+### `--b25` でスクランブル解除（Linux）
+
+`--b25` を付けると、`/usr/local/lib/libaribb25.so` を動的ロードし、受信した MPEG-2 TS を ARIB STD-B25 で復号してから標準出力または `-o` に書き出します。ライブラリのヘッダーや開発用リンク指定は不要ですが、ビルド時には cgo と C コンパイラが必要です。フラグを付けない場合は生の TS を出力します。
+
+```sh
+CGO_ENABLED=1 go build -o coax ./cmd/coax
+
+# 地上波を復号して録画
+./coax tune --ch 27 --b25 -o ter27.ts
+
+# BS を復号して標準出力へ渡す
+./coax tune --ch BS15_1 --b25 | cat > bs.ts
+```
+
+libaribb25 は B-CAS/ACAS カードへのアクセスに PC/SC を使います。実際のカードまたは正しく動作する互換 PC/SC サービスが必要です。チューナー内蔵カードを使う場合は `--pcsc` を併用し、libpcsclite がそのソケットを見るように `PCSCLITE_CSOCK_NAME` を設定してください。ライブラリ単体をインストールするだけではカード認証は行えません。
+
+`--b25` は MPEG-2 TS 用です。ISDB-S3 の TLV/MMT ストリームは復号できません。Linux 以外、または `CGO_ENABLED=0` のビルドで指定するとエラーを返します。
+
 止めるには、`Ctrl-C`かSIGTERMを送ります。
 接続が閉じるとチューナーは解放されるので、終了処理は不要です。
 

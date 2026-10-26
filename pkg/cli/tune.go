@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Till0196/coax/pkg/b25"
 	"github.com/Till0196/coax/pkg/host"
 	"github.com/Till0196/coax/pkg/isdb"
 )
@@ -31,6 +32,7 @@ func runTune(arguments []string, stdout, stderr io.Writer) error {
 	streamID := flags.String("stream-id", "", "relative stream to select: an ISDB-S TSID, a DVB-T2 pipe, or a TSID multiplexed into a TSMF carrier")
 	lnbPower := flags.String("lnb-power", "", "LNB supply for a satellite channel: off, low or high (11 and 13 mean low, 15 and 18 mean high); none when omitted, as recpt1 and recisdb do")
 	noSync := flags.Bool("no-sync", false, "take the stream even when it is not transport packets, instead of refusing a tuner that locked to noise")
+	decodeB25 := flags.Bool("b25", false, "descramble MPEG-2 TS with /usr/local/lib/libaribb25.so (Linux with cgo)")
 	gain := flags.String("gain", "", "front-end gain, on hardware that has a setting: auto, min, max, or a level with its unit such as +13dB; the tuner's own default when omitted")
 	satNumber := flags.String("sat-number", "", "position on a DiSEqC switch, 0 to 3, when the dish reaches this tuner through one; nothing is sent when this is omitted")
 	lnbf := flags.String("lnbf", "", "low-noise block on the dish, when --freq is a downlink frequency rather than an intermediate one: UNIVERSAL, EXTENDED, ENHANCED, STANDARD, DBS, C-BAND, 110BS, JCSAT3A, JCSAT4B")
@@ -107,13 +109,23 @@ func runTune(arguments []string, stdout, stderr io.Writer) error {
 	}
 	defer closeWriter()
 
-	// A satellite demodulator is told the identifier and hands back that stream
-	// alone; a cable multiplex arrives whole and has to be separated here. The
-	// flag means the same either way, so the stream goes through a filter that
-	// does nothing unless what arrives turns out to be multiplexed.
+	// The decoder sits downstream of the relative-stream filter so a
+	// multiplexed carrier is split into the requested TS before B25 sees it.
+	var decoder *b25.Decoder
+	if *decodeB25 {
+		decoder, err = b25.New(writer)
+		if err != nil {
+			return err
+		}
+		writer = decoder
+		command.report("B25 decoding enabled")
+	}
+
+	// Satellite demodulators deliver the selected stream directly. Multiplexed
+	// carriers need filtering; all other streams pass through unchanged.
+	var filter *isdb.Filter
 	if wanted, ok := transportStreamID(*streamID); ok {
-		filter := isdb.NewFilter(writer, wanted, command.host.report)
-		defer filter.Close()
+		filter = isdb.NewFilter(writer, wanted, command.host.report)
 		writer = filter
 	}
 
@@ -123,8 +135,21 @@ func runTune(arguments []string, stdout, stderr io.Writer) error {
 		<-ctx.Done()
 		_ = stream.Close()
 	}()
-	if _, err := io.Copy(writer, stream); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("receive the stream: %w", err)
+	_, copyErr := io.Copy(writer, stream)
+	// Flush in stream order: any pending filter bytes must reach B25 before
+	// libaribb25 flushes its own buffered TS packets.
+	if filter != nil {
+		if err := filter.Close(); copyErr == nil {
+			copyErr = err
+		}
+	}
+	if decoder != nil {
+		if err := decoder.Close(); copyErr == nil {
+			copyErr = err
+		}
+	}
+	if copyErr != nil && ctx.Err() == nil {
+		return fmt.Errorf("receive the stream: %w", copyErr)
 	}
 	return nil
 }
