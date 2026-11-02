@@ -397,12 +397,29 @@ func (board *Demod) Tune(frequencyHz uint32) (err error) {
 	}
 
 	// A DVBv5 tune from a frequency alone starts from a cleared cache.
-	board.channel.clear()
-	board.channel.frequency = frequencyHz
+	const maxAttempts = 3
+	for i := 0; i < maxAttempts; i++ {
+		if i > 0 {
+			board.demod.sleep(minTuneStep)
+		}
 
-	if err := board.demod.setFrontend(); err != nil {
-		return err
+		board.channel.clear()
+		board.channel.frequency = frequencyHz
+
+		if err := board.demod.setFrontend(); err != nil {
+			return err
+		}
+		if board.failure.err != nil {
+			return board.failure.err
+		}
+
+		// ふろんとえんどちぇっく
+		hasLock := board.demod.status != statusTuneFailed && board.demod.readStatus()&feHasLock != 0
+		if hasLock {
+			break
+		}
 	}
+
 	return board.failure.err
 }
 
